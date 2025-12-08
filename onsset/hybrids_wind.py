@@ -10,28 +10,28 @@ from io import StringIO
 
 
 @numba.njit
-def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, inv_eff, n_dis, n_chg, dod_max,
-                           diesel_price, end_year, start_year, pv_cost, charge_controller, pv_inverter,
-                           pv_om, diesel_cost, diesel_om, battery_inverter_life, battery_inverter_cost, diesel_life,
-                           pv_life, battery_cost, discount_rate, lpsp_max, diesel_limit, full_life_cycles):
-    pv = float(configuration[0])
+def find_least_cost_option_wind(configuration, wind_curve, hour_numbers, load_curve, inv_eff, n_dis,
+                                n_chg, dod_max, diesel_price, end_year, start_year, wind_cost, charge_controller,
+                                wind_om, diesel_cost, diesel_om, battery_inverter_life, battery_inverter_cost,
+                                diesel_life, wind_life, battery_cost, discount_rate, lpsp_max, diesel_limit,
+                                full_life_cycles):
+
+    wind = float(configuration[0])
     battery = float(configuration[1])
     usable_battery = battery * dod_max  # ensure the battery never goes below max depth of discharge
     diesel = float(configuration[2])
-    if diesel < 0.5:
-        diesel = 0  # minimum diesel capacity is 0.5 kW if included
 
     annual_demand = load_curve.sum()
 
     # First the PV generation and net load (load - pv generation) is calculated for each hour of the year
-    net_load, pv_gen = pv_generation(temp, ghi, pv, load_curve, inv_eff)
+    net_load, wind_gen = wind_generation(wind_curve, wind, load_curve, inv_eff)
 
     # For each hour of the year, diesel generation, battery charge/discharge and performance variables are calculated.
     diesel_generation_share, battery_life, unmet_demand_share, annual_fuel_consumption, \
         excess_gen_share, battery_soc_curve, diesel_gen_curve = \
-        year_simulation(battery_size=usable_battery, diesel_capacity=diesel, net_load=net_load,
-                        hour_numbers=hour_numbers, inv_eff=inv_eff, n_dis=n_dis, n_chg=n_chg,
-                        annual_demand=annual_demand, full_life_cycles=full_life_cycles, dod_max=dod_max)
+        year_simulation_wind(battery_size=usable_battery, diesel_capacity=diesel, net_load=net_load,
+                             hour_numbers=hour_numbers, inv_eff=inv_eff, n_dis=n_dis, n_chg=n_chg,
+                             annual_demand=annual_demand, full_life_cycles=full_life_cycles, dod_max=dod_max)
 
     # If the system could meet the demand in a satisfactory manner (i.e. with high enough reliability and low enough
     # share of the generation coming from the diesel generator), then the LCOE is calculated. Else 99 is returned.
@@ -43,45 +43,46 @@ def find_least_cost_option(configuration, temp, ghi, hour_numbers, load_curve, i
         npc = 0
     else:
         lcoe, investment, battery_investment, fuel_cost, \
-            om_cost, npc = calculate_hybrid_lcoe(diesel_price=diesel_price,
-                                                 end_year=end_year,
-                                                 start_year=start_year,
-                                                 annual_demand=annual_demand,
-                                                 fuel_usage=annual_fuel_consumption,
-                                                 pv_panel_size=pv,
-                                                 pv_cost=pv_cost,
-                                                 charge_controller=charge_controller,
-                                                 pv_inverter_cost=pv_inverter,
-                                                 pv_om=pv_om,
-                                                 diesel_capacity=diesel,
-                                                 diesel_cost=diesel_cost,
-                                                 diesel_om=diesel_om,
-                                                 battery_inverter_cost=battery_inverter_cost,
-                                                 battery_inverter_life=battery_inverter_life,
-                                                 load_curve=load_curve,
-                                                 diesel_life=diesel_life,
-                                                 pv_life=pv_life,
-                                                 battery_life=battery_life,
-                                                 battery_size=battery,
-                                                 battery_cost=battery_cost,
-                                                 discount_rate=discount_rate)
+            om_cost, npc = calculate_hybrid_lcoe_wind(diesel_price=diesel_price,
+                                                     end_year=end_year,
+                                                     start_year=start_year,
+                                                     annual_demand=annual_demand,
+                                                     fuel_usage=annual_fuel_consumption,
+                                                     wind_size=wind,
+                                                     wind_cost=wind_cost,
+                                                     charge_controller=charge_controller,
+                                                     wind_om=wind_om,
+                                                     diesel_capacity=diesel,
+                                                     diesel_cost=diesel_cost,
+                                                     diesel_om=diesel_om,
+                                                     battery_inverter_cost=battery_inverter_cost,
+                                                     battery_inverter_life=battery_inverter_life,
+                                                     load_curve=load_curve,
+                                                     diesel_life=diesel_life,
+                                                     wind_life=wind_life,
+                                                     battery_life=battery_life,
+                                                     battery_size=battery,
+                                                     battery_cost=battery_cost,
+                                                     discount_rate=discount_rate)
 
-    return lcoe, unmet_demand_share, diesel_generation_share, investment, fuel_cost, om_cost, battery, \
-        battery_life, pv, diesel, npc
+    return lcoe, unmet_demand_share, diesel_generation_share, investment, fuel_cost, om_cost, battery, battery_life, wind, diesel, npc
 
 @numba.njit
-def pv_generation(temp, ghi, pv_capacity, load, inv_eff):
-    # Calculation of PV gen and net load
-    temp = temp[:,0]
-    ghi = ghi[:,0]
-    k_t = 0.005  # temperature factor of PV panels
-    t_cell = temp + 0.0256 * ghi  # PV cell temperature
-    pv_gen = pv_capacity * 0.9 * ghi / 1000 * (1 - k_t * (t_cell - 25))  # PV generation in the hour
-    net_load = load - pv_gen * inv_eff  # remaining load not met by PV panels
-    return net_load, pv_gen
+def wind_generation(wind_curve, wind, load, inv_eff):
+    # Calculation of Wind gen and net load
+    p_rated = 600
+    p_curve = [0, 0, 0, 0, 30, 77, 135, 208, 287, 371, 450, 514, 558,
+               582, 594, 598, 600, 600, 600, 600, 600, 600, 600, 600, 600]
+    wind_power = np.round(wind_curve)
+    for i in prange(len(p_curve)):
+        wind_power = np.where(wind_power == i, p_curve[i], wind_power)
+    #wind_power = wind_curve
+    wind_gen = wind_power * wind / p_rated
+    net_load = load - wind_gen
+    return net_load, wind_gen
 
 @numba.njit
-def year_simulation(battery_size, diesel_capacity, net_load, hour_numbers, inv_eff, n_dis, n_chg,
+def year_simulation_wind(battery_size, diesel_capacity, net_load, hour_numbers, inv_eff, n_dis, n_chg,
                     annual_demand, full_life_cycles, dod_max):
     soc = 0.5  # Initial SOC of battery
 
@@ -96,12 +97,14 @@ def year_simulation(battery_size, diesel_capacity, net_load, hour_numbers, inv_e
     diesel_gen_curve = []
     battery_soc_curve = []
 
+    net_load = net_load[0]
+
     # Run the simulation for each hour during one year
     for hour in hour_numbers:
         load = net_load[int(hour)]
 
         diesel_gen, annual_fuel_consumption, annual_diesel_gen, annual_battery_use, soc, annual_unmet_demand, \
-            annual_excess_gen = hour_simulation(hour, soc, load, diesel_capacity, annual_fuel_consumption,
+            annual_excess_gen = hour_simulation_wind(hour, soc, load, diesel_capacity, annual_fuel_consumption,
                                                 annual_diesel_gen,
                                                 inv_eff, n_dis, n_chg, battery_size, annual_battery_use,
                                                 annual_unmet_demand,
@@ -113,7 +116,7 @@ def year_simulation(battery_size, diesel_capacity, net_load, hour_numbers, inv_e
 
     # When a full year has been simulated, calculate battery life and performance metrics
     if (battery_size > 0) & (annual_battery_use > 0):
-        battery_life = min(round(full_life_cycles / (annual_battery_use)), 20)
+        battery_life = min(round(full_life_cycles / (annual_battery_use)), 20)  # ToDo should dod_max be included here?
     else:
         battery_life = 20
 
@@ -126,7 +129,7 @@ def year_simulation(battery_size, diesel_capacity, net_load, hour_numbers, inv_e
 
 
 @numba.njit
-def hour_simulation(hour, soc, net_load, diesel_capacity, annual_fuel_consumption, annual_diesel_gen, inv_eff, n_dis,
+def hour_simulation_wind(hour, soc, net_load, diesel_capacity, annual_fuel_consumption, annual_diesel_gen, inv_eff, n_dis,
                     n_chg, battery_size, annual_battery_use, annual_unmet_demand, annual_excess_gen):
     # First the battery self-discharge is calculated (default rate set to 0.02% of the state-of-charge - SOC - per hour)
     battery_use = 0.0002 * soc
@@ -184,49 +187,41 @@ def hour_simulation(hour, soc, net_load, diesel_capacity, annual_fuel_consumptio
 
     soc_prev = soc  # Store the battery SOC before the hour in a variable to ensure battery is not over-used
 
-    soc_usage = 0  # Variable to store how much the SOC changes during the hour
     if (net_load > 0) & (battery_size > 0):
         if diesel_gen > 0:
             # If diesel generation is used, but is smaller than load, battery is discharged
-            soc_usage = net_load / n_dis / inv_eff / battery_size
+            soc -= net_load / n_dis / inv_eff / battery_size
         elif diesel_gen == 0:
             # If net load is positive and no diesel is used, battery is discharged
-            soc_usage = net_load / n_dis / inv_eff / battery_size
+            soc -= net_load / n_dis / inv_eff / battery_size
     elif (net_load < 0) & (battery_size > 0):
         if diesel_gen > 0:
-            # If diesel generation is used, and is larger than load, excess diesel is used to charge the battery
-            soc_usage = net_load * n_chg * inv_eff / battery_size
+            # If diesel generation is used, and is larger than load, battery is charged
+            soc -= net_load * n_chg * inv_eff / battery_size
         if diesel_gen == 0:
             # If net load is negative, and no diesel has been used, excess PV gen is used to charge battery
-            soc_usage = net_load * n_chg / battery_size
-
-    if net_load >= 0:
-        soc -= min(soc_usage, soc_prev)  # Update SOC based on the calculated SOC usage, ensuring battery is not over-used
-    else:
-        soc -= soc_usage
-
-    if soc < 0:
-        print('Error: SOC below 0')
+            soc -= net_load * n_chg / battery_size
 
     # Store how much battery energy (measured in SOC) was discharged (if used).
     # No more than the previous SOC can be used
     if (net_load > 0) & (battery_size > 0):
-        battery_use += min(soc_usage, soc_prev)
-        # battery_use += min(net_load / n_dis / battery_size, soc_prev)
+        battery_use += min(net_load / n_dis / battery_size, soc_prev)
 
     annual_battery_use += battery_use
 
     # Calculate if there was any unmet demand or excess energy generation during the hour
 
     if battery_size > 0:
-        if soc_usage > soc_prev:
-            # If the SOC usage was larger than what the battery could provide, there is unmet demand
-            annual_unmet_demand += (soc_usage - soc_prev) * n_dis * inv_eff * battery_size
+        if soc < 0:
+            # If State of charge is negative, that means there's demand that could not be met.
+            # If so, the annual unmet demand variable is updated and the SOC is reset to empty (0)
+            annual_unmet_demand -= soc / n_dis * battery_size
+            soc = 0
 
-        if soc_prev - soc_usage > 1:
+        if soc > 1:
             # If State of Charge is larger than 1, that means there was excess PV/diesel generation
             # If so, the annual excess generation variable is updated and the SOC is set to full (1)
-            annual_excess_gen += (soc_prev + soc_usage - 1) / n_chg / inv_eff * battery_size
+            annual_excess_gen += (soc - 1) / n_chg * battery_size
             soc = 1
     else:  # This part handles the same case, if no battery is included in the system
         if net_load > 0:
@@ -239,12 +234,11 @@ def hour_simulation(hour, soc, net_load, diesel_capacity, annual_fuel_consumptio
 
 
 @numba.njit
-def calculate_hybrid_lcoe(diesel_price, end_year, start_year, annual_demand,
-                          fuel_usage, pv_panel_size, pv_cost, pv_life, pv_om, charge_controller, pv_inverter_cost,
+def calculate_hybrid_lcoe_wind(diesel_price, end_year, start_year, annual_demand,
+                          fuel_usage, wind_size, wind_cost, wind_life, wind_om, charge_controller,
                           diesel_capacity, diesel_cost, diesel_om, diesel_life,
                           battery_size, battery_cost, battery_life, battery_inverter_cost, battery_inverter_life,
-                          load_curve, discount_rate, pv_inverter_life=10, charge_controller_life=10,
-                          battery_om=0.05, battery_inverter_om=0.05):
+                          load_curve, discount_rate):
 
     # Necessary information for calculation of LCOE is defined
     project_life = end_year - start_year  # Calculate project lifetime
@@ -266,53 +260,43 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, annual_demand,
         salvage = 0
         inverter_investment = 0
         diesel_investment = 0
-        pv_investment = 0
+        wind_investment = 0
         battery_investment = 0
-        pv_inverter_investment = 0
-        charge_controller_investment = 0
 
         fuel_costs = fuel_usage * diesel_price
-        om_costs = (pv_panel_size * (pv_cost + charge_controller + pv_inverter_cost) * pv_om +
-                    diesel_capacity * diesel_cost * diesel_om + battery_size * battery_cost * battery_om + max(
-                    load_curve) * battery_inverter_cost * battery_inverter_om)
+        om_costs = (wind_size * (wind_cost + charge_controller) * wind_om + diesel_capacity * diesel_cost * diesel_om)
 
         total_fuel_cost += fuel_costs / (1 + discount_rate) ** year
         total_om_cost += om_costs / (1 + discount_rate) ** year
 
         # Here we check if there is need for investment/reinvestment
         if year % battery_inverter_life == 0:
-            inverter_investment = max(
-                load_curve) * battery_inverter_cost  # Battery inverter, sized based on the peak demand in the year
+            inverter_investment = max(load_curve) * battery_inverter_cost  # Battery inverter, sized based on the peak demand in the year
         if year % diesel_life == 0:
             diesel_investment = diesel_capacity * diesel_cost
-        if year % pv_life == 0:
-            pv_investment = pv_panel_size * pv_cost
-        if year % pv_inverter_life == 0:
-            pv_inverter_investment = max(
-                load_curve) * pv_inverter_cost  # PV inverter sized based on the peak demand in the year. ToDo, should there be a DC/AC ratio?
-        if year % charge_controller_life == 0:
-            charge_controller_investment = pv_panel_size * charge_controller  # Charge controller, sized based on the PV panel rated capacity
+        if year % wind_life == 0:
+            wind_investment = wind_size * wind_cost
         if year % battery_life == 0:
             battery_investment = battery_size * battery_cost
 
-            # In the final year, the salvage value of all components is calculated based on remaining life
-            if year == project_life:
-                salvage = (1 - (project_life % battery_life) / battery_life) * battery_cost * battery_size + \
-                          (1 - (project_life % diesel_life) / diesel_life) * diesel_capacity * diesel_cost + \
-                          (1 - (project_life % pv_life) / pv_life) * pv_panel_size * (pv_cost + charge_controller) + \
-                          (1 - (project_life % pv_inverter_life) / pv_inverter_life) * pv_panel_size * pv_inverter_cost + \
-                          (1 - (project_life % charge_controller_life) / charge_controller_life) * pv_panel_size * charge_controller + \
-                          (1 - (project_life % battery_inverter_life) / battery_inverter_life) * max(load_curve) * battery_inverter_cost
+        # In the final year, the salvage value of all components is calculated based on remaining life
+        if year == project_life:
+            salvage = (1 - (project_life % battery_life) / battery_life) * battery_cost * battery_size + \
+                      (1 - (project_life % diesel_life) / diesel_life) * diesel_capacity * diesel_cost + \
+                      (1 - (project_life % wind_life) / wind_life) * wind_size * wind_cost + \
+                      (1 - (project_life % battery_inverter_life) / battery_inverter_life) * max(
+                load_curve) * battery_inverter_cost
 
-            total_battery_investment -= (1 - (project_life % battery_life) / battery_life) * battery_cost * battery_size
+            total_battery_investment -= (1 - (
+                    project_life % battery_life) / battery_life) * battery_cost * battery_size
 
-        investment += diesel_investment + pv_investment + battery_investment + inverter_investment - salvage
+        investment += diesel_investment + wind_investment + battery_investment + inverter_investment - salvage
         total_battery_investment += battery_investment
 
-        sum_costs += (fuel_costs + om_costs + battery_investment + diesel_investment + pv_investment + pv_inverter_investment + charge_controller_investment +
+        sum_costs += (fuel_costs + om_costs + battery_investment + diesel_investment + wind_investment +
                       inverter_investment - salvage) / ((1 + discount_rate) ** year)
 
-        npc += (fuel_costs + om_costs + battery_investment + diesel_investment + pv_investment + charge_controller_investment +
+        npc += (fuel_costs + om_costs + battery_investment + diesel_investment + wind_investment +
                 inverter_investment) / ((1 + discount_rate) ** year)
 
         if year > 0:
@@ -322,7 +306,7 @@ def calculate_hybrid_lcoe(diesel_price, end_year, start_year, annual_demand,
 
 
 @numba.njit
-def calc_load_curve(tier, annual_demand):
+def calc_load_curve_wind(tier, annual_demand):
     # the values below define the load curve for the five tiers. The values reflect the share of the daily demand
     # expected in each hour of the day (sum of all values for one tier = 1)
     tier5_load_curve = [0.021008403, 0.021008403, 0.021008403, 0.021008403, 0.027310924, 0.037815126,
@@ -360,72 +344,70 @@ def calc_load_curve(tier, annual_demand):
     return np.array(load_curve) * annual_demand / 365
 
 
-def get_pv_data(latitude, longitude, token, output_folder):
-    # This function can be used to retrieve solar resource data from https://renewables.ninja
-    api_base = 'https://www.renewables.ninja/api/'
-    s = requests.session()
-    # Send token header with each request
-    s.headers = {'Authorization': 'Token ' + token}
+# def get_pv_data(latitude, longitude, token, output_folder): # ToDo
+#     # This function can be used to retrieve solar resource data from https://renewables.ninja
+#     api_base = 'https://www.renewables.ninja/api/'
+#     s = requests.session()
+#     # Send token header with each request
+#     s.headers = {'Authorization': 'Token ' + token}
+#
+#     out_path = os.path.join(output_folder, 'pv_data_lat_{}_long_{}.csv'.format(latitude, longitude))
+#
+#     url = api_base + 'data/pv'
+#
+#     args = {
+#         'lat': latitude,
+#         'lon': longitude,
+#         'date_from': '2020-01-01',
+#         'date_to': '2020-12-31',
+#         'dataset': 'merra2',
+#         'capacity': 1.0,
+#         'system_loss': 0.1,
+#         'tracking': 0,
+#         'tilt': 35,
+#         'azim': 180,
+#         'format': 'json',
+#         'local_time': True,
+#         'raw': True
+#     }
+#
+#     if token != '':
+#
+#         try:
+#             r = s.get(url, params=args)
+#
+#             # Parse JSON to get a pandas.DataFrame of data and dict of metadata
+#             parsed_response = json.loads(r.text)
+#
+#         except json.decoder.JSONDecodeError:
+#             print('API maximum hourly requests reached, waiting one hour', time.ctime())
+#             time.sleep(3700)
+#             print('Wait over, resuming API requests', time.ctime())
+#             r = s.get(url, params=args)
+#
+#             # Parse JSON to get a pandas.DataFrame of data and dict of metadata
+#             parsed_response = json.loads(r.text)
+#
+#         data = pd.read_json(StringIO(json.dumps(parsed_response['data'])), orient='index')
+#
+#         df_out = pd.DataFrame(columns=['time', 'ghi', 'temp'])
+#         df_out['ghi'] = (data['irradiance_direct'] + data['irradiance_diffuse']) * 1000
+#         df_out['temp'] = data['temperature']
+#         df_out['time'] = data['local_time']
+#
+#         df_out.to_csv(out_path, index=False)
+#     else:
+#         print('No token provided')
 
-    out_path = os.path.join(output_folder, 'pv_data_lat_{}_long_{}.csv'.format(latitude, longitude))
 
-    url = api_base + 'data/pv'
-
-    args = {
-        'lat': latitude,
-        'lon': longitude,
-        'date_from': '2020-01-01',
-        'date_to': '2020-12-31',
-        'dataset': 'merra2',
-        'capacity': 1.0,
-        'system_loss': 0.1,
-        'tracking': 0,
-        'tilt': 35,
-        'azim': 180,
-        'format': 'json',
-        'local_time': True,
-        'raw': True
-    }
-
-    if token != '':
-
-        try:
-            r = s.get(url, params=args)
-
-            # Parse JSON to get a pandas.DataFrame of data and dict of metadata
-            parsed_response = json.loads(r.text)
-
-        except json.decoder.JSONDecodeError:
-            print('API maximum hourly requests reached, waiting one hour', time.ctime())
-            time.sleep(3700)
-            print('Wait over, resuming API requests', time.ctime())
-            r = s.get(url, params=args)
-
-            # Parse JSON to get a pandas.DataFrame of data and dict of metadata
-            parsed_response = json.loads(r.text)
-
-        data = pd.read_json(StringIO(json.dumps(parsed_response['data'])), orient='index')
-
-        df_out = pd.DataFrame(columns=['time', 'ghi', 'temp'])
-        df_out['ghi'] = (data['irradiance_direct'] + data['irradiance_diffuse']) * 1000
-        df_out['temp'] = data['temperature']
-        df_out['time'] = data['local_time']
-
-        df_out.to_csv(out_path, index=False)
-    else:
-        print('No token provided')
-
-
-def read_environmental_data(path, skiprows=341882, ghi_col=3, temp_col=2):
+def read_wind_environmental_data(wind_path, skiprows=3, wind_col=3):
     """
-    This method reads the solar resource GHI and temperature for each hour during one year from a csv-file.
-    The skiprows and skipcolumns define which rows and columns the data should be read from.
+        This method reads the wind resource (m/s) for each hour during one year from a csv-file.
+        The skiprows and skipcolumns define which rows and columns the data should be read from.
     """
     try:
-        #data = pd.read_csv(path, skiprows=skiprows)
-        ghi_curve = pd.read_csv(path, usecols=[ghi_col], skiprows=skiprows).values
-        temp = pd.read_csv(path, usecols=[temp_col], skiprows=skiprows).values
-
-        return ghi_curve, temp
+        wind_curve = pd.read_csv(wind_path, usecols=[wind_col], skiprows=skiprows).values
+        return wind_curve
     except:
         print('Could not read data, try changing which columns and rows ro read')
+
